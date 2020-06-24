@@ -125,6 +125,7 @@ def main_loop
         end
       end
     end
+    max_height = `tput lines`.chomp.to_i
     pbuff = ""
     lines = 1
     pbuff << "\e[H\e[2J"
@@ -133,6 +134,7 @@ def main_loop
     pbuff << "Unique Mac Count\t\tFirst Seen (sec ago)\t\tLast Seen (sec ago)\t\tSSID\n"
     lines +=1
     @tracker.each do |ssid, meta|
+      next if lines >= max_height
       if @hide_empty && ssid.empty?
         next
       end
