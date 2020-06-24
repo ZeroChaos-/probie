@@ -1,0 +1,138 @@
+#!/usr/bin/env ruby
+#
+@VERSION = 0.2
+#
+require 'json'
+require 'net/http'
+require 'optparse'
+
+DEFAULT_CONFIG = { 
+  :kismet_username     => "kismet",
+  :kismet_password     => "kismet",
+}
+
+
+# parse all command line arguments and store in options Hash for run time
+# configurations
+options = {}
+
+OptionParser.new do |opts|
+  opts.on("-c", "--config-file example.json", String, "Pass a config file other than the default probie.json") do |v|
+    options[:config_file] = v
+  end
+  opts.on("--hide-empty", "Hide probes for empty ssid") do |v|
+    options[:hide_empty] = v
+  end
+  opts.on("-v", "--version", "Show version and quit") do |v|
+    puts "#{$0}: #{@VERSION}"
+    exit
+  end
+  opts.on_tail("-h", "--help", "Show this message") do
+    puts "#{$0}: #{@VERSION}"
+    puts opts
+    exit
+  end
+end.parse!
+
+if options[:config_file]
+  @config_file = options[:config_file]
+else
+  @config_file = 'probie.json'
+end
+if options[:hide_empty]
+  @hide_empty = true
+else
+  @hide_empty = false
+end
+
+def read_config
+  if ! File.exists?(@config_file)
+    puts("Config file #{@config_file} not found.  Writing defaults")
+    File.write(@config_file, JSON.pretty_generate(DEFAULT_CONFIG))
+    puts("Defaults written to #{@config_file}, please edit it and run again.")
+    exit 0
+  end
+  begin
+    @config = JSON.parse(File.read(@config_file), symbolize_names: true)
+    puts("Successfully read config file #{@config_file}")
+  rescue
+    puts("Failed to parse #{@config_file}")
+    exit 1
+  end
+  #this migrates old config files to include new parameters
+  @config = DEFAULT_CONFIG.merge(@config)
+
+  File.write(@config_file, JSON.pretty_generate(@config))
+end
+
+def check_kismet
+  uri = URI("http://localhost:2501/system/status.json")
+  request = Net::HTTP::Get.new(uri)
+  request.basic_auth @config[:kismet_username], @config[:kismet_password]
+  begin
+    response = Net::HTTP.start(uri.hostname, uri.port) { |http| http.request(request) }
+  rescue Errno::ECONNREFUSED
+    puts "Please start kismet before starting probie"
+    exit 1
+  end
+  return JSON.parse(response.body)["kismet.system.timestamp.start_sec"]
+end
+
+def call_kismet
+  uri = URI("http://localhost:2501/devices/last-time/#{@last_request}/devices.json")
+  request = Net::HTTP::Get.new(uri)
+  request.basic_auth @config[:kismet_username], @config[:kismet_password]
+  begin
+    @last_request = Time.now.to_i
+    response = Net::HTTP.start(uri.hostname, uri.port) { |http| http.request(request) }
+    #if response.body == "[]"
+    #  puts "no response"
+    #else
+    #  puts "returned #{response.body}"
+    #end
+    return JSON.parse(response.body)
+  rescue
+    puts("Failed to connect to kismet, kismet failed?")
+    return false
+  end
+end
+
+def main_loop
+  @last_request = 0
+  @tracker = {}
+  loop do
+    call_kismet.each do |device|
+      if device["dot11.device"]["dot11.device.num_probed_ssids"] > 0
+        device["dot11.device"]["dot11.device.probed_ssid_map"].each do |ssid|
+            @tracker[ssid["dot11.probedssid.ssid"]] ||= {}
+            @tracker[ssid["dot11.probedssid.ssid"]][:first] = ssid["dot11.probedssid.first_time"]
+            @tracker[ssid["dot11.probedssid.ssid"]][:last] = ssid["dot11.probedssid.last_time"]
+            @tracker[ssid["dot11.probedssid.ssid"]][:mac_list] ||= []
+            @tracker[ssid["dot11.probedssid.ssid"]][:mac_list] << device["kismet.device.base.macaddr"]
+        end
+      end
+    end
+    pbuff = ""
+    lines = 1
+    pbuff << "\e[H\e[2J"
+    pbuff << "\e[34;1mProbie #{@VERSION}\e[0m\n"
+    lines += 1
+    pbuff << "Unique Mac Count\t\tFirst Seen (sec ago)\t\tLast Seen (sec ago)\t\tSSID\n"
+    lines +=1
+    @tracker.each do |ssid, meta|
+      if @hide_empty && ssid.empty?
+        next
+      end
+      pbuff << "#{meta[:mac_list].count}\t\t\t\t#{Time.now.to_i - meta[:first]}\t\t\t\t#{Time.now.to_i - meta[:last]}\t\t\t\t#{ssid}\n"
+      lines += 1
+    end
+    puts pbuff
+    sleep 1
+  end
+end
+
+begin
+  puts "Probie Version #{@VERSION}"
+  read_config
+  main_loop
+end
