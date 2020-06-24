@@ -133,7 +133,7 @@ def main_loop
     lines += 1
     pbuff << "Unique Mac Count\t\tFirst Seen (sec ago)\t\tLast Seen (sec ago)\t\tSSID\n"
     lines +=1
-    @tracker.each do |ssid, meta|
+    @tracker.sort.each do |ssid, meta|
       next if lines >= max_height
       if @hide_empty && ssid.empty?
         next
