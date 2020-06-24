@@ -105,8 +105,21 @@ def main_loop
       if device["dot11.device"]["dot11.device.num_probed_ssids"] > 0
         device["dot11.device"]["dot11.device.probed_ssid_map"].each do |ssid|
             @tracker[ssid["dot11.probedssid.ssid"]] ||= {}
-            @tracker[ssid["dot11.probedssid.ssid"]][:first] = ssid["dot11.probedssid.first_time"]
-            @tracker[ssid["dot11.probedssid.ssid"]][:last] = ssid["dot11.probedssid.last_time"]
+            if @tracker[ssid["dot11.probedssid.ssid"]][:first]
+              if @tracker[ssid["dot11.probedssid.ssid"]][:first] > ssid["dot11.probedssid.first_time"]
+                @tracker[ssid["dot11.probedssid.ssid"]][:first] = ssid["dot11.probedssid.first_time"]
+              end
+            else
+              @tracker[ssid["dot11.probedssid.ssid"]][:first] = ssid["dot11.probedssid.first_time"]
+            end
+            #take only most recent last_time
+            if @tracker[ssid["dot11.probedssid.ssid"]][:last]
+              if @tracker[ssid["dot11.probedssid.ssid"]][:last] < ssid["dot11.probedssid.last_time"]
+                @tracker[ssid["dot11.probedssid.ssid"]][:last] = ssid["dot11.probedssid.last_time"]
+              end
+            else
+              @tracker[ssid["dot11.probedssid.ssid"]][:last] = ssid["dot11.probedssid.last_time"]
+            end
             @tracker[ssid["dot11.probedssid.ssid"]][:mac_list] ||= []
             @tracker[ssid["dot11.probedssid.ssid"]][:mac_list] << device["kismet.device.base.macaddr"]
         end
