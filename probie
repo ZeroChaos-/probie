@@ -1,6 +1,6 @@
 #!/usr/bin/env ruby
 #
-@VERSION = 0.3
+@VERSION = 0.4
 #
 require 'json'
 require 'net/http'
@@ -103,6 +103,8 @@ def main_loop
   loop do
     call_kismet.each do |device|
       if device["dot11.device"]["dot11.device.num_probed_ssids"] > 0
+        #require 'pry'
+        #binding.pry
         device["dot11.device"]["dot11.device.probed_ssid_map"].each do |ssid|
             @tracker[ssid["dot11.probedssid.ssid"]] ||= {}
             if @tracker[ssid["dot11.probedssid.ssid"]][:first]
@@ -121,7 +123,9 @@ def main_loop
               @tracker[ssid["dot11.probedssid.ssid"]][:last] = ssid["dot11.probedssid.last_time"]
             end
             @tracker[ssid["dot11.probedssid.ssid"]][:mac_list] ||= []
-            @tracker[ssid["dot11.probedssid.ssid"]][:mac_list] << device["kismet.device.base.macaddr"]
+            unless @tracker[ssid["dot11.probedssid.ssid"]][:mac_list].include? device["kismet.device.base.macaddr"]
+              @tracker[ssid["dot11.probedssid.ssid"]][:mac_list] << device["kismet.device.base.macaddr"]
+            end
         end
       end
     end
@@ -138,6 +142,7 @@ def main_loop
       if @hide_empty && ssid.empty?
         next
       end
+      #pbuff << "#{meta[:mac_list].count}\t\t\t\t#{Time.now.to_i - meta[:first]}\t\t\t\t#{Time.now.to_i - meta[:last]}\t\t\t\t#{ssid}\t#{meta[:mac_list]}\n"
       pbuff << "#{meta[:mac_list].count}\t\t\t\t#{Time.now.to_i - meta[:first]}\t\t\t\t#{Time.now.to_i - meta[:last]}\t\t\t\t#{ssid}\n"
       lines += 1
     end
