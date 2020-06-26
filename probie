@@ -1,6 +1,6 @@
 #!/usr/bin/env ruby
 #
-@VERSION = 0.5
+@VERSION = 0.6
 #
 #TODO: track mac and manuf, add new view for mac/manuf
 require 'json'
@@ -35,6 +35,9 @@ OptionParser.new do |opts|
   end
   opts.on("-r", "--ssid-regex blah", String, "Regex inclusive filter for just this ssid") do |v|
     options[:ssid_regex] = v
+  end
+  opts.on("-d", "--client-detail", "Show per client details instead of per ssid") do |v|
+    options[:client_detail] = v
   end
   opts.on("-v", "--version", "Show version and quit") do |v|
     puts "#{$0}: #{@VERSION}"
@@ -76,6 +79,11 @@ if options[:ssid_regex]
   @ssid_regex = options[:ssid_regex]
 else
   @ssid_regex = false
+end
+if options[:client_detail]
+  @client_detail = true
+else
+  @client_detail = false
 end
 
 def read_config
@@ -140,8 +148,34 @@ def main_loop
   @tracker = {}
   loop do
     call_kismet.each do |device|
-      if device["dot11.device"]["dot11.device.num_probed_ssids"] > 0
-        device["dot11.device"]["dot11.device.probed_ssid_map"].each do |ssid|
+      if @client_detail
+        if device["dot11.device"]["dot11.device.num_probed_ssids"] > 0
+          device["dot11.device"]["dot11.device.probed_ssid_map"].each do |ssid|
+            @tracker[device["kismet.device.base.macaddr"]] ||= {}
+            @tracker[device["kismet.device.base.macaddr"]][:ssid_list] ||= []
+            unless @tracker[device["kismet.device.base.macaddr"]][:ssid_list].include? ssid["dot11.probedssid.ssid"]
+              @tracker[device["kismet.device.base.macaddr"]][:ssid_list] << ssid["dot11.probedssid.ssid"]
+            end
+            if @tracker[device["kismet.device.base.macaddr"]][:first]
+              if @tracker[device["kismet.device.base.macaddr"]][:first] > ssid["dot11.probedssid.first_time"]
+                @tracker[device["kismet.device.base.macaddr"]][:first] = ssid["dot11.probedssid.first_time"]
+              end
+            else
+              @tracker[device["kismet.device.base.macaddr"]][:first] = ssid["dot11.probedssid.first_time"]
+            end
+            #take only most recent last_time
+            if @tracker[device["kismet.device.base.macaddr"]][:last]
+              if @tracker[device["kismet.device.base.macaddr"]][:last] < ssid["dot11.probedssid.last_time"]
+                @tracker[device["kismet.device.base.macaddr"]][:last] = ssid["dot11.probedssid.last_time"]
+              end
+            else
+              @tracker[device["kismet.device.base.macaddr"]][:last] = ssid["dot11.probedssid.last_time"]
+            end
+          end
+        end
+      else
+        if device["dot11.device"]["dot11.device.num_probed_ssids"] > 0
+          device["dot11.device"]["dot11.device.probed_ssid_map"].each do |ssid|
             @tracker[ssid["dot11.probedssid.ssid"]] ||= {}
             if @tracker[ssid["dot11.probedssid.ssid"]][:first]
               if @tracker[ssid["dot11.probedssid.ssid"]][:first] > ssid["dot11.probedssid.first_time"]
@@ -162,6 +196,7 @@ def main_loop
             unless @tracker[ssid["dot11.probedssid.ssid"]][:mac_list].include? device["kismet.device.base.macaddr"]
               @tracker[ssid["dot11.probedssid.ssid"]][:mac_list] << device["kismet.device.base.macaddr"]
             end
+          end
         end
       end
     end
@@ -171,29 +206,41 @@ def main_loop
     pbuff << "\e[H\e[2J"
     pbuff << "\e[34;1mProbie #{@VERSION}\e[0m\n"
     lines += 1
-    pbuff << "Unique Mac Count\t\tFirst Seen (sec ago)\t\tLast Seen (sec ago)\t\tSSID\n"
-    lines +=1
-    @tracker.sort.each do |ssid, meta|
-      unless done
-        next if lines >= max_height
-      end
-      if @hide_empty && ssid.empty?
-        next unless @include_empty
-      end
-      if @ssid_regex && ssid !~ /#{@ssid_regex}/i
-        next unless ( ssid.empty? && !@include_empty )
-      elsif @ssid_match && ssid != @ssid_match
-        next unless ( ssid.empty? && !@include_empty )
-      end
-      if @show_mac
-        pbuff << "#{meta[:mac_list].count}\t\t\t\t#{Time.now.to_i - meta[:first]}\t\t\t\t#{Time.now.to_i - meta[:last]}\t\t\t\t#{ssid}\n"
+    if @client_detail
+      pbuff << "Mac Addresses\t\tFirst Seen (sec ago)\t\tLast Seen (sec ago)\t\tSSID List\n"
+      lines +=1
+      @tracker.sort.each do |mac, meta|
+        unless done
+          next if lines >= max_height
+        end
+        pbuff << "#{mac}\t\t#{Time.now.to_i - meta[:first]}\t\t\t\t#{Time.now.to_i - meta[:last]}\t\t\t#{meta[:ssid_list]}\n"
         lines += 1
-        pbuff << "#{meta[:mac_list].compact}\n"
-        lines += 1
-      else
-        pbuff << "#{meta[:mac_list].count}\t\t\t\t#{Time.now.to_i - meta[:first]}\t\t\t\t#{Time.now.to_i - meta[:last]}\t\t\t\t#{ssid}\n"
       end
-      lines += 1
+    else
+      pbuff << "Unique Mac Count\t\tFirst Seen (sec ago)\t\tLast Seen (sec ago)\t\tSSID\n"
+      lines +=1
+      @tracker.sort.each do |ssid, meta|
+        unless done
+          next if lines >= max_height
+        end
+        if @hide_empty && ssid.empty?
+          next unless @include_empty
+        end
+        if @ssid_regex && ssid !~ /#{@ssid_regex}/i
+          next unless ( ssid.empty? && !@include_empty )
+        elsif @ssid_match && ssid != @ssid_match
+          next unless ( ssid.empty? && !@include_empty )
+        end
+        if @show_mac
+          pbuff << "#{meta[:mac_list].count}\t\t\t\t#{Time.now.to_i - meta[:first]}\t\t\t\t#{Time.now.to_i - meta[:last]}\t\t\t\t#{ssid}\n"
+          lines += 1
+          pbuff << "#{meta[:mac_list].compact}\n"
+          lines += 1
+        else
+          pbuff << "#{meta[:mac_list].count}\t\t\t\t#{Time.now.to_i - meta[:first]}\t\t\t\t#{Time.now.to_i - meta[:last]}\t\t\t\t#{ssid}\n"
+        end
+        lines += 1
+      end
     end
     puts pbuff
     if done
