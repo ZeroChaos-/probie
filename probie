@@ -1,7 +1,8 @@
 #!/usr/bin/env ruby
 #
-@VERSION = 0.4
+@VERSION = 0.5
 #
+#TODO: track mac and manuf, add new view for mac/manuf
 require 'json'
 require 'net/http'
 require 'optparse'
@@ -23,6 +24,18 @@ OptionParser.new do |opts|
   opts.on("--hide-empty", "Hide probes for empty ssid") do |v|
     options[:hide_empty] = v
   end
+  opts.on("--include-empty", "Include probes for empty ssid when filtering") do |v|
+    options[:include_empty] = v
+  end
+  opts.on("--show-mac", "Show list of mac addresses") do |v|
+    options[:show_mac] = v
+  end
+  opts.on("-s", "--ssid blah", String, "Filter and show just this ssid, exact matches only") do |v|
+    options[:ssid_match] = v
+  end
+  opts.on("-r", "--ssid-regex blah", String, "Regex inclusive filter for just this ssid") do |v|
+    options[:ssid_regex] = v
+  end
   opts.on("-v", "--version", "Show version and quit") do |v|
     puts "#{$0}: #{@VERSION}"
     exit
@@ -43,6 +56,26 @@ if options[:hide_empty]
   @hide_empty = true
 else
   @hide_empty = false
+end
+if options[:include_empty]
+  @include_empty = true
+else
+  @include_empty = false
+end
+if options[:show_mac]
+  @show_mac = true
+else
+  @show_mac = false
+end
+if options[:ssid_match]
+  @ssid_match = options[:ssid_match]
+else
+  @ssid_match = false
+end
+if options[:ssid_regex]
+  @ssid_regex = options[:ssid_regex]
+else
+  @ssid_regex = false
 end
 
 def read_config
@@ -98,13 +131,16 @@ def call_kismet
 end
 
 def main_loop
+  done = false
+  trap('SIGINT') do
+    done = true
+  end
+
   @last_request = 0
   @tracker = {}
   loop do
     call_kismet.each do |device|
       if device["dot11.device"]["dot11.device.num_probed_ssids"] > 0
-        #require 'pry'
-        #binding.pry
         device["dot11.device"]["dot11.device.probed_ssid_map"].each do |ssid|
             @tracker[ssid["dot11.probedssid.ssid"]] ||= {}
             if @tracker[ssid["dot11.probedssid.ssid"]][:first]
@@ -138,15 +174,31 @@ def main_loop
     pbuff << "Unique Mac Count\t\tFirst Seen (sec ago)\t\tLast Seen (sec ago)\t\tSSID\n"
     lines +=1
     @tracker.sort.each do |ssid, meta|
-      next if lines >= max_height
-      if @hide_empty && ssid.empty?
-        next
+      unless done
+        next if lines >= max_height
       end
-      #pbuff << "#{meta[:mac_list].count}\t\t\t\t#{Time.now.to_i - meta[:first]}\t\t\t\t#{Time.now.to_i - meta[:last]}\t\t\t\t#{ssid}\t#{meta[:mac_list]}\n"
-      pbuff << "#{meta[:mac_list].count}\t\t\t\t#{Time.now.to_i - meta[:first]}\t\t\t\t#{Time.now.to_i - meta[:last]}\t\t\t\t#{ssid}\n"
+      if @hide_empty && ssid.empty?
+        next unless @include_empty
+      end
+      if @ssid_regex && ssid !~ /#{@ssid_regex}/i
+        next unless ( ssid.empty? && !@include_empty )
+      elsif @ssid_match && ssid != @ssid_match
+        next unless ( ssid.empty? && !@include_empty )
+      end
+      if @show_mac
+        pbuff << "#{meta[:mac_list].count}\t\t\t\t#{Time.now.to_i - meta[:first]}\t\t\t\t#{Time.now.to_i - meta[:last]}\t\t\t\t#{ssid}\n"
+        lines += 1
+        pbuff << "#{meta[:mac_list].compact}\n"
+        lines += 1
+      else
+        pbuff << "#{meta[:mac_list].count}\t\t\t\t#{Time.now.to_i - meta[:first]}\t\t\t\t#{Time.now.to_i - meta[:last]}\t\t\t\t#{ssid}\n"
+      end
       lines += 1
     end
     puts pbuff
+    if done
+      exit
+    end
     sleep 1
   end
 end
