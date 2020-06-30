@@ -1,6 +1,6 @@
 #!/usr/bin/env ruby
 #
-@VERSION = 0.6
+@VERSION = 0.7
 #
 #TODO: track mac and manuf, add new view for mac/manuf
 require 'json'
@@ -126,15 +126,130 @@ def call_kismet
   begin
     @last_request = Time.now.to_i
     response = Net::HTTP.start(uri.hostname, uri.port) { |http| http.request(request) }
-    #if response.body == "[]"
-    #  puts "no response"
-    #else
-    #  puts "returned #{response.body}"
-    #end
     return JSON.parse(response.body)
   rescue
     puts("Failed to connect to kismet, kismet failed?")
     return false
+  end
+end
+
+def update_tracker
+  call_kismet.each do |device|
+    if @client_detail
+      if device["dot11.device"]["dot11.device.num_probed_ssids"] > 0
+        device["dot11.device"]["dot11.device.probed_ssid_map"].each do |ssid|
+          @tracker[device["kismet.device.base.macaddr"]] ||= {}
+          @tracker[device["kismet.device.base.macaddr"]][:manuf] ||= device["kismet.device.base.manuf"]
+          @tracker[device["kismet.device.base.macaddr"]][:ssid_list] ||= []
+          unless @tracker[device["kismet.device.base.macaddr"]][:ssid_list].include? ssid["dot11.probedssid.ssid"]
+            @tracker[device["kismet.device.base.macaddr"]][:ssid_list] << ssid["dot11.probedssid.ssid"]
+          end
+          if @tracker[device["kismet.device.base.macaddr"]][:first]
+            if @tracker[device["kismet.device.base.macaddr"]][:first] > ssid["dot11.probedssid.first_time"]
+              @tracker[device["kismet.device.base.macaddr"]][:first] = ssid["dot11.probedssid.first_time"]
+            end
+          else
+            @tracker[device["kismet.device.base.macaddr"]][:first] = ssid["dot11.probedssid.first_time"]
+          end
+          #take only most recent last_time
+          if @tracker[device["kismet.device.base.macaddr"]][:last]
+            if @tracker[device["kismet.device.base.macaddr"]][:last] < ssid["dot11.probedssid.last_time"]
+              @tracker[device["kismet.device.base.macaddr"]][:last] = ssid["dot11.probedssid.last_time"]
+            end
+          else
+            @tracker[device["kismet.device.base.macaddr"]][:last] = ssid["dot11.probedssid.last_time"]
+          end
+        end
+      end
+    else
+      if device["dot11.device"]["dot11.device.num_probed_ssids"] > 0
+        device["dot11.device"]["dot11.device.probed_ssid_map"].each do |ssid|
+          @tracker[ssid["dot11.probedssid.ssid"]] ||= {}
+          if @tracker[ssid["dot11.probedssid.ssid"]][:first]
+            if @tracker[ssid["dot11.probedssid.ssid"]][:first] > ssid["dot11.probedssid.first_time"]
+              @tracker[ssid["dot11.probedssid.ssid"]][:first] = ssid["dot11.probedssid.first_time"]
+            end
+          else
+            @tracker[ssid["dot11.probedssid.ssid"]][:first] = ssid["dot11.probedssid.first_time"]
+          end
+          #take only most recent last_time
+          if @tracker[ssid["dot11.probedssid.ssid"]][:last]
+            if @tracker[ssid["dot11.probedssid.ssid"]][:last] < ssid["dot11.probedssid.last_time"]
+              @tracker[ssid["dot11.probedssid.ssid"]][:last] = ssid["dot11.probedssid.last_time"]
+            end
+          else
+            @tracker[ssid["dot11.probedssid.ssid"]][:last] = ssid["dot11.probedssid.last_time"]
+          end
+          @tracker[ssid["dot11.probedssid.ssid"]][:mac_list] ||= []
+          unless @tracker[ssid["dot11.probedssid.ssid"]][:mac_list].include? device["kismet.device.base.macaddr"]
+            @tracker[ssid["dot11.probedssid.ssid"]][:mac_list] << device["kismet.device.base.macaddr"]
+          end
+        end
+      end
+    end
+  end
+end
+
+def end_print
+  print "\e[H\e[2J"
+  if @client_detail
+    puts "Mac Addresses,Manuf,First Seen,Last Seen,SSID List"
+  else
+    puts "Unique Mac Count,First Seen,Last Seen,SSID,Mac list"
+  end
+  @tracker.sort.each do |key, meta|
+    if @client_detail
+      puts "#{key},#{meta[:manuf]},#{Time.at(meta[:first])},#{Time.at(meta[:last])},#{meta[:ssid_list]}"
+    else
+      puts "#{meta[:mac_list].count},#{Time.at(meta[:first])},#{Time.at(meta[:last])},#{key},#{meta[:mac_list]}"
+    end
+  end
+  exit
+end
+
+def show_cui
+  max_height = `tput lines`.chomp.to_i
+  pbuff = ""
+  lines = 1
+  pbuff << "\e[H\e[2J"
+  pbuff << "\e[34;1mProbie #{@VERSION}\e[0m\n"
+  lines += 1
+  if @client_detail
+    pbuff << "Mac Addresses\t\tManuf\t\t\tFirst Seen (sec ago)\t\tLast Seen (sec ago)\tSSID List\n"
+    lines +=1
+  else
+    pbuff << "Unique Mac Count\t\tFirst Seen (sec ago)\t\tLast Seen (sec ago)\t\tSSID\n"
+    lines +=1
+  end
+  @tracker.sort.each do |key, meta|
+    next if lines >= max_height
+    if @client_detail
+      if meta[:manuf].length < 8
+        pbuff << "#{key}\t#{meta[:manuf][0..14]}\t\t\t#{Time.now.to_i - meta[:first]}\t\t\t\t#{Time.now.to_i - meta[:last]}\t\t\t#{meta[:ssid_list]}\n"
+      else
+        pbuff << "#{key}\t#{meta[:manuf][0..14]}\t\t#{Time.now.to_i - meta[:first]}\t\t\t\t#{Time.now.to_i - meta[:last]}\t\t\t#{meta[:ssid_list]}\n"
+      end
+      lines += 1
+    else
+      if @hide_empty && key.empty?
+        next unless @include_empty
+      end
+      if @ssid_regex && key !~ /#{@ssid_regex}/i
+        next unless ( key.empty? && !@include_empty )
+      elsif @ssid_match && key != @ssid_match
+        next unless ( key.empty? && !@include_empty )
+      end
+      if @show_mac
+        pbuff << "#{meta[:mac_list].count}\t\t\t\t#{Time.now.to_i - meta[:first]}\t\t\t\t#{Time.now.to_i - meta[:last]}\t\t\t\t#{key}\n"
+        lines += 1
+        pbuff << "#{meta[:mac_list]}\n"
+        lines += 1
+      else
+        pbuff << "#{meta[:mac_list].count}\t\t\t\t#{Time.now.to_i - meta[:first]}\t\t\t\t#{Time.now.to_i - meta[:last]}\t\t\t\t#{key}\n"
+      end
+      lines += 1
+    end
+    puts pbuff
   end
 end
 
@@ -147,104 +262,11 @@ def main_loop
   @last_request = 0
   @tracker = {}
   loop do
-    call_kismet.each do |device|
-      if @client_detail
-        if device["dot11.device"]["dot11.device.num_probed_ssids"] > 0
-          device["dot11.device"]["dot11.device.probed_ssid_map"].each do |ssid|
-            @tracker[device["kismet.device.base.macaddr"]] ||= {}
-            @tracker[device["kismet.device.base.macaddr"]][:ssid_list] ||= []
-            unless @tracker[device["kismet.device.base.macaddr"]][:ssid_list].include? ssid["dot11.probedssid.ssid"]
-              @tracker[device["kismet.device.base.macaddr"]][:ssid_list] << ssid["dot11.probedssid.ssid"]
-            end
-            if @tracker[device["kismet.device.base.macaddr"]][:first]
-              if @tracker[device["kismet.device.base.macaddr"]][:first] > ssid["dot11.probedssid.first_time"]
-                @tracker[device["kismet.device.base.macaddr"]][:first] = ssid["dot11.probedssid.first_time"]
-              end
-            else
-              @tracker[device["kismet.device.base.macaddr"]][:first] = ssid["dot11.probedssid.first_time"]
-            end
-            #take only most recent last_time
-            if @tracker[device["kismet.device.base.macaddr"]][:last]
-              if @tracker[device["kismet.device.base.macaddr"]][:last] < ssid["dot11.probedssid.last_time"]
-                @tracker[device["kismet.device.base.macaddr"]][:last] = ssid["dot11.probedssid.last_time"]
-              end
-            else
-              @tracker[device["kismet.device.base.macaddr"]][:last] = ssid["dot11.probedssid.last_time"]
-            end
-          end
-        end
-      else
-        if device["dot11.device"]["dot11.device.num_probed_ssids"] > 0
-          device["dot11.device"]["dot11.device.probed_ssid_map"].each do |ssid|
-            @tracker[ssid["dot11.probedssid.ssid"]] ||= {}
-            if @tracker[ssid["dot11.probedssid.ssid"]][:first]
-              if @tracker[ssid["dot11.probedssid.ssid"]][:first] > ssid["dot11.probedssid.first_time"]
-                @tracker[ssid["dot11.probedssid.ssid"]][:first] = ssid["dot11.probedssid.first_time"]
-              end
-            else
-              @tracker[ssid["dot11.probedssid.ssid"]][:first] = ssid["dot11.probedssid.first_time"]
-            end
-            #take only most recent last_time
-            if @tracker[ssid["dot11.probedssid.ssid"]][:last]
-              if @tracker[ssid["dot11.probedssid.ssid"]][:last] < ssid["dot11.probedssid.last_time"]
-                @tracker[ssid["dot11.probedssid.ssid"]][:last] = ssid["dot11.probedssid.last_time"]
-              end
-            else
-              @tracker[ssid["dot11.probedssid.ssid"]][:last] = ssid["dot11.probedssid.last_time"]
-            end
-            @tracker[ssid["dot11.probedssid.ssid"]][:mac_list] ||= []
-            unless @tracker[ssid["dot11.probedssid.ssid"]][:mac_list].include? device["kismet.device.base.macaddr"]
-              @tracker[ssid["dot11.probedssid.ssid"]][:mac_list] << device["kismet.device.base.macaddr"]
-            end
-          end
-        end
-      end
-    end
-    max_height = `tput lines`.chomp.to_i
-    pbuff = ""
-    lines = 1
-    pbuff << "\e[H\e[2J"
-    pbuff << "\e[34;1mProbie #{@VERSION}\e[0m\n"
-    lines += 1
-    if @client_detail
-      pbuff << "Mac Addresses\t\tFirst Seen (sec ago)\t\tLast Seen (sec ago)\t\tSSID List\n"
-      lines +=1
-      @tracker.sort.each do |mac, meta|
-        unless done
-          next if lines >= max_height
-        end
-        pbuff << "#{mac}\t\t#{Time.now.to_i - meta[:first]}\t\t\t\t#{Time.now.to_i - meta[:last]}\t\t\t#{meta[:ssid_list]}\n"
-        lines += 1
-      end
-    else
-      pbuff << "Unique Mac Count\t\tFirst Seen (sec ago)\t\tLast Seen (sec ago)\t\tSSID\n"
-      lines +=1
-      @tracker.sort.each do |ssid, meta|
-        unless done
-          next if lines >= max_height
-        end
-        if @hide_empty && ssid.empty?
-          next unless @include_empty
-        end
-        if @ssid_regex && ssid !~ /#{@ssid_regex}/i
-          next unless ( ssid.empty? && !@include_empty )
-        elsif @ssid_match && ssid != @ssid_match
-          next unless ( ssid.empty? && !@include_empty )
-        end
-        if @show_mac
-          pbuff << "#{meta[:mac_list].count}\t\t\t\t#{Time.now.to_i - meta[:first]}\t\t\t\t#{Time.now.to_i - meta[:last]}\t\t\t\t#{ssid}\n"
-          lines += 1
-          pbuff << "#{meta[:mac_list].compact}\n"
-          lines += 1
-        else
-          pbuff << "#{meta[:mac_list].count}\t\t\t\t#{Time.now.to_i - meta[:first]}\t\t\t\t#{Time.now.to_i - meta[:last]}\t\t\t\t#{ssid}\n"
-        end
-        lines += 1
-      end
-    end
-    puts pbuff
+    update_tracker
     if done
-      exit
+      end_print
+    else
+      show_cui
     end
     sleep 1
   end
